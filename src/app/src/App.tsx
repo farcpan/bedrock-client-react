@@ -19,6 +19,12 @@ const bedrockClient = new BedrockRuntimeClient({
   credentials: { accessKeyId: accessKeyId, secretAccessKey: secretAccessKey },
 });
 
+const API_MODE = {
+  COMPLETION: "Completion",
+  MESSAGES: "Messages",
+} as const;
+type API_MODE = (typeof API_MODE)[keyof typeof API_MODE];
+
 /**
  * App
  */
@@ -30,7 +36,7 @@ export const App = () => {
   const [invokeResultText, setInvokeResultText] = useState("");
 
   // button click event handler
-  const onClickStart = async () => {
+  const onClickStart = async (apiType: API_MODE) => {
     if (!prompt) {
       console.log("please set prompt!");
       return;
@@ -49,54 +55,49 @@ export const App = () => {
       "・ユーザーが暑い、温度が高いと感じている場合は1を設定する\n" +
       "・ユーザーが寒い、温度が低いと感じている場合は2を設定する\n" +
       "`detailed`: `active`および`desired`を判定する際の根拠となった情報をユーザープロンプトから抽出して返却してください。最大で50文字程度に要約するようにしてください。";
-    const body = JSON.stringify(
-      createAnthropicRequest(system, [
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: prompt,
-            },
-          ],
-        },
-      ])
-    );
-
+    // Bedrock Input
     const invokeModelCommandInput = {
       modelId: "anthropic.claude-v2:1",
       contentType: "application/json",
       accept: "*/*",
-      body: body,
-      /*
-      body: JSON.stringify({
-        prompt:
-          "\n\nHuman: " +
-          "あなたはオフィス内のユーザーのクレームや要望をチェックし、必要な部署に情報を転送する役割を持っています。" +
-          "与えられたプロンプトの内容をチェックし、室内の温度や湿度に関する要望が記載されているか判定してください。ユーザープロンプトは次の行以降に記載されます。\n" +
-          prompt +
-          "\n\nAssistant: ",
-        max_tokens_to_sample: 200,
-        temperature: 0.5,
-        top_k: 250,
-        top_p: 1,
-        stop_sequences: ["\n\nHuman:"],
-        anthropic_version: "bedrock-2023-05-31",
-      }),
-      */
+      body:
+        apiType === API_MODE.MESSAGES
+          ? createAnthropicRequestForMessagesAPI(system, [
+              {
+                role: "user",
+                content: [
+                  {
+                    type: "text",
+                    text: prompt,
+                  },
+                ],
+              },
+            ])
+          : createAnthropicRequestForCompletionAPI(system, prompt),
     };
 
     try {
       const bedrockResponse = await bedrockClient.send(
         new InvokeModelCommand(invokeModelCommandInput)
       );
-      const responseBody = JSON.parse(
-        Buffer.from(bedrockResponse.body).toString("utf-8")
-      ) as {
-        content: AnthropicRequestContent[];
-      };
-      const text = responseBody.content[0].text;
-      setInvokeResultText(text);
+
+      if (apiType === API_MODE.MESSAGES) {
+        const responseBody = JSON.parse(
+          Buffer.from(bedrockResponse.body).toString("utf-8")
+        ) as {
+          content: AnthropicRequestContent[];
+        };
+        const text = responseBody.content[0].text;
+        setInvokeResultText(text);
+      } else {
+        const responseBody = JSON.parse(
+          Buffer.from(bedrockResponse.body).toString("utf-8")
+        ) as {
+          completion: string;
+        };
+        const text = responseBody.completion;
+        setInvokeResultText(text);
+      }
     } catch (e) {
       console.error(e);
     }
@@ -124,10 +125,22 @@ export const App = () => {
       <Button
         variant="contained"
         color="primary"
-        onClick={onClickStart}
+        onClick={() => {
+          onClickStart(API_MODE.COMPLETION);
+        }}
         disabled={!prompt}
       >
-        START
+        START(Completion API)
+      </Button>
+      <Button
+        variant="contained"
+        color="primary"
+        onClick={() => {
+          onClickStart(API_MODE.MESSAGES);
+        }}
+        disabled={!prompt}
+      >
+        START(Messages API)
       </Button>
 
       <Typography sx={{ fontSize: "12px", color: "#111111" }}>
@@ -137,11 +150,20 @@ export const App = () => {
   );
 };
 
-interface AnthropicRequest {
+interface AnthropicRequestForMessagesAPI {
   anthropic_version: string;
   max_tokens: number;
   system: string;
   messages: AnthropicRequestMessage[];
+}
+interface AnthropicRequestForCompletionAPI {
+  anthropic_version: string;
+  max_tokens_to_sample: number;
+  prompt: string;
+  temperature: number;
+  top_k: number;
+  top_p: number;
+  stop_sequences: string[];
 }
 interface AnthropicRequestMessage {
   role: string;
@@ -151,15 +173,37 @@ interface AnthropicRequestContent {
   type: string;
   text: string;
 }
-const createAnthropicRequest = (
+const createAnthropicRequestForMessagesAPI = (
   system: string,
   messages: AnthropicRequestMessage[]
-): AnthropicRequest => {
+): string => {
   const max_tokens = 1024;
-  return {
+  const request: AnthropicRequestForMessagesAPI = {
     anthropic_version: "bedrock-2023-05-31",
     max_tokens: max_tokens,
     system: system,
     messages: messages,
   };
+  return JSON.stringify(request);
+};
+const createAnthropicRequestForCompletionAPI = (
+  system: string,
+  prompt: string
+): string => {
+  const request: AnthropicRequestForCompletionAPI = {
+    prompt:
+      "\n\nHuman: " +
+      system +
+      "\n" +
+      "以降は実際にユーザーが入力した要望やクレームです。\n" +
+      prompt +
+      "\n\nAssistant: ",
+    max_tokens_to_sample: 200,
+    temperature: 0.5,
+    top_k: 250,
+    top_p: 1,
+    stop_sequences: ["\n\nHuman:"],
+    anthropic_version: "bedrock-2023-05-31",
+  };
+  return JSON.stringify(request);
 };
